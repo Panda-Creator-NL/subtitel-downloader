@@ -1,4 +1,4 @@
-import os, random, requests, re, subprocess, struct, time, threading
+import os, random, requests, re, subprocess, struct, time, threading, difflib
 from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
@@ -160,12 +160,72 @@ def get_user_quota():
         pass
     return False, False, 0
 
+def extract_release_group(name):
+    name = re.sub(r'\.(mkv|mp4|avi|srt)$', '', name, flags=re.I)
+    m = re.search(r'-([a-z0-9]+)(?:\[.*?\])?$', name.strip(), flags=re.I)
+    if m:
+        grp = m.group(1).lower()
+        if grp not in ['dl', 'hd', 'rip', 'x264', 'x265', 'hevc', '1080p', '720p', '2160p', '4k']:
+            return grp
+    return ""
+
 def internal_search(fullpath, lang):
     title, year, season, episode = get_best_search_terms(fullpath)
     abs_path = os.path.abspath(os.path.join(MEDIA_DIR, fullpath))
     file_hash = hashFile(abs_path) if os.path.exists(abs_path) else None
+
+    # Haal bestandsnaam en mapnaam op voor release-vergelijking
+    norm_path = fullpath.replace('\\', '/')
+    path_parts = [p for p in norm_path.split('/') if p]
+    raw_filename = path_parts[-1] if path_parts else ""
+    raw_folder = path_parts[-2] if len(path_parts) > 1 else ""
+    video_stem = os.path.splitext(raw_filename)[0].lower()
+    folder_stem = raw_folder.lower()
+    combined_local_raw = f"{folder_stem} {video_stem}"
     
-    def fetch_and_filter(prms, check_strict=True):
+    video_clean = re.sub(r'[^a-z0-9]', ' ', video_stem)
+    combined_local_clean = re.sub(r'[^a-z0-9]', ' ', combined_local_raw)
+    local_tokens = set(combined_local_clean.split())
+    local_group = extract_release_group(video_stem) or extract_release_group(folder_stem)
+
+    # Categorieën voor technische & editie-matching
+    editions = [
+        ('extended', ['extended']),
+        ('directors_cut', ['directors cut', 'director s cut', 'dc']),
+        ('unrated', ['unrated']),
+        ('remastered', ['remastered']),
+        ('theatrical', ['theatrical']),
+        ('imax', ['imax']),
+        ('proper', ['proper']),
+        ('repack', ['repack'])
+    ]
+    sources = [
+        ('remux', ['remux']),
+        ('bluray', ['bluray', 'blu ray', 'bdrip', 'brrip', 'bdr']),
+        ('webdl', ['web dl', 'webdl']),
+        ('webrip', ['webrip', 'web rip']),
+        ('web', ['web']),
+        ('hdtv', ['hdtv', 'pdtv', 'dsr']),
+        ('dvd', ['dvdrip', 'dvd', 'dvdr'])
+    ]
+    services = ['amzn', 'amazon', 'nf', 'netflix', 'dsnp', 'disney', 'atvp', 'hmax', 'max', 'pcok', 'hulu', 'bbc', 'itvx']
+    resolutions = ['2160p', '1080p', '720p', '480p', '4k']
+    codecs = [
+        ('x265', ['x265', 'h265', 'hevc']),
+        ('x264', ['x264', 'h264', 'avc']),
+        ('av1', ['av1']),
+        ('xvid', ['xvid', 'divx'])
+    ]
+
+    def has_any(text_clean, token_set, keywords):
+        for kw in keywords:
+            if ' ' in kw:
+                if re.search(rf'\b{re.escape(kw)}\b', text_clean): return True
+            elif kw in token_set:
+                return True
+        return False
+
+    def fetch_and_filter(prms, check_strict=True, is_hash_search=False):
         if not API_KEY: return [], False
         valid = []
         headers = {"Api-Key": API_KEY, "User-Agent": USER_AGENT, "Accept": "application/json"}
@@ -180,14 +240,21 @@ def internal_search(fullpath, lang):
             for sub in raw_subs:
                 a = sub.get('attributes', {})
                 release = str(a.get('release', '')).lower()
+                files_list = a.get('files') or []
+                sub_fname = str(files_list[0].get('file_name', '')).lower() if files_list else ''
+                sub_fname_stem = os.path.splitext(sub_fname)[0]
+
                 feature = a.get('feature_details') or {}
                 m_name = str(feature.get('movie_name', '')).lower()
                 t_name = str(feature.get('title', '')).lower()
                 
-                score = int(a.get('download_count') or 0) + (float(a.get('ratings') or 0) * 1000)
                 t_lower = title.lower()
                 
                 release_clean = re.sub(r'[^a-z0-9]', ' ', release)
+                sub_fname_clean = re.sub(r'[^a-z0-9]', ' ', sub_fname_stem)
+                combined_sub_clean = f"{release_clean} {sub_fname_clean}".strip()
+                sub_tokens = set(combined_sub_clean.split())
+
                 m_name_clean = re.sub(r'[^a-z0-9]', ' ', m_name)
                 t_name_clean = re.sub(r'[^a-z0-9]', ' ', t_name)
                 t_clean = re.sub(r'[^a-z0-9]', ' ', t_lower)
@@ -196,18 +263,97 @@ def internal_search(fullpath, lang):
                     target_words = [w for w in t_clean.split() if w not in ['the', 'and', 'a', 'an', 'of', 'in', 'on', 'de', 'het', 'een'] and len(w) > 0]
                     if not target_words: target_words = [w for w in t_clean.split() if len(w) > 0]
                     pattern_ordered = r'.*?'.join([rf'\b{re.escape(w)}\b' for w in target_words])
-                    match_release = bool(re.search(pattern_ordered, release_clean))
+                    match_release = bool(re.search(pattern_ordered, combined_sub_clean))
                     match_mname = all(re.search(rf'\b{re.escape(w)}\b', m_name_clean) for w in target_words) if m_name_clean else False
                     match_tname = all(re.search(rf'\b{re.escape(w)}\b', t_name_clean) for w in target_words) if t_name_clean else False
                     if not (match_release or match_mname or match_tname): continue
-                
-                if t_lower == m_name or t_lower == t_name: score += 100000000
-                elif m_name and (t_clean in m_name_clean or m_name_clean in t_clean): score += 50000000
+
+                score = 0.0
+
+                # 1. Hash match (hoogste prioriteit: exact hetzelfde videobestand)
+                if is_hash_search or a.get('moviehash_match') is True:
+                    score += 1000000000
+
+                # 2. Titel & Jaar match (basisvalidatie dat het de juiste film/serie betreft)
+                if t_lower == m_name or t_lower == t_name:
+                    score += 100000000
+                elif m_name and (t_clean in m_name_clean or m_name_clean in t_clean):
+                    score += 50000000
+
                 if year:
-                    if str(year) == str(feature.get('year', '')): score += 10000000
-                    elif re.search(rf'\b{year}\b', release_clean): score += 5000000
-                if 'web' in release_clean or 'bluray' in release_clean: score += 50000
-                sub['sort_score'] = score
+                    if str(year) == str(feature.get('year', '')):
+                        score += 10000000
+                    elif re.search(rf'\b{year}\b', combined_sub_clean):
+                        score += 5000000
+
+                # 3. Exacte bestandsnaam/release match
+                if video_stem and (video_stem == release or video_stem == sub_fname_stem):
+                    score += 50000000
+                elif video_clean and (video_clean == release_clean or video_clean == sub_fname_clean):
+                    score += 40000000
+
+                # 4. Speciale edities (Extended, Director's Cut, Unrated, etc.)
+                for _, kw_list in editions:
+                    local_has = has_any(combined_local_clean, local_tokens, kw_list)
+                    sub_has = has_any(combined_sub_clean, sub_tokens, kw_list)
+                    if local_has and sub_has:
+                        score += 5000000
+                    elif local_has != sub_has:
+                        # Strafpunten als de ene Extended/Director's Cut is en de andere niet
+                        score -= 5000000
+
+                # 5. Releasegroep match (bijv. -RARBG, -NTb, -FLUX, -SPARKS)
+                sub_group = extract_release_group(release) or extract_release_group(sub_fname_stem)
+                if local_group:
+                    if sub_group and local_group == sub_group:
+                        score += 3000000
+                    elif local_group in sub_tokens:
+                        score += 2500000
+
+                # 6. Bron / Rip-type match (BluRay, WEB-DL, WEBRip, HDTV, Remux)
+                local_matched_sources = {s_name for s_name, kw_list in sources if has_any(combined_local_clean, local_tokens, kw_list)}
+                sub_matched_sources = {s_name for s_name, kw_list in sources if has_any(combined_sub_clean, sub_tokens, kw_list)}
+                if local_matched_sources and sub_matched_sources:
+                    if local_matched_sources & sub_matched_sources:
+                        score += 2000000
+                    elif ('webdl' in local_matched_sources or 'webrip' in local_matched_sources or 'web' in local_matched_sources) and \
+                         ('webdl' in sub_matched_sources or 'webrip' in sub_matched_sources or 'web' in sub_matched_sources):
+                        score += 1000000
+                    else:
+                        # Bron wijkt af (bijv. BluRay video vs HDTV/WEB sub)
+                        score -= 1000000
+
+                # 7. Streamingdienst match (AMZN, NF, DSNP, etc.)
+                for srv in services:
+                    if srv in local_tokens and srv in sub_tokens:
+                        score += 500000
+
+                # 8. Resolutie match (2160p, 1080p, 720p)
+                for res in resolutions:
+                    if res in local_tokens and res in sub_tokens:
+                        score += 300000
+
+                # 9. Codec match (x264, x265/HEVC)
+                for _, kw_list in codecs:
+                    if has_any(combined_local_clean, local_tokens, kw_list) and has_any(combined_sub_clean, sub_tokens, kw_list):
+                        score += 200000
+
+                # 10. Woord-overlap & String-gelijkenis tussen videobestand en release
+                if local_tokens and sub_tokens:
+                    common_tokens = local_tokens & sub_tokens
+                    score += len(common_tokens) * 25000
+
+                if video_clean and release_clean:
+                    seq_ratio = difflib.SequenceMatcher(None, video_clean, release_clean).ratio()
+                    score += int(seq_ratio * 500000)
+
+                # 11. Minimale tie-breaker op basis van rating & downloads (max +0.99 punt totaal)
+                dl_count = int(a.get('download_count') or 0)
+                rating = float(a.get('ratings') or 0)
+                tie_breaker = min(0.99, (rating * 0.05) + (min(dl_count, 100000) / 1000000.0))
+                score += tie_breaker
+
+                sub['sort_score'] = round(score, 4)
                 valid.append(sub)
         except Exception:
             pass
@@ -219,7 +365,7 @@ def internal_search(fullpath, lang):
         subs, search_term_display = [], ""
         if file_hash:
             search_term_display = f"Hash: {file_hash}"
-            subs, is_limited = fetch_and_filter({"moviehash": file_hash, "languages": lang}, check_strict=False)
+            subs, is_limited = fetch_and_filter({"moviehash": file_hash, "languages": lang}, check_strict=False, is_hash_search=True)
             if is_limited: return True, search_term_display, [], "API limiet bereikt"
             
         if not subs:
@@ -322,6 +468,15 @@ def background_batch_processor(paths, lang):
     failed_list = []
     skipped_list = []
     
+    def check_milestone():
+        total = len(success_list) + len(failed_list) + len(skipped_list)
+        if total > 0 and total % 100 == 0:
+            send_discord_alert(
+                f"🔄 Batch Tussenstand: {total} bestanden verwerkt", 
+                f"✅ Succesvol: {len(success_list)}\n⏭️ Overgeslagen: {len(skipped_list)}\n❌ Mislukt / Gestopt: {len(failed_list)}\n\nNog te gaan: {len(found_files) - total}", 
+                3447003
+            )
+            
     for item in found_files:
         if stop_batch_flag:
             log_msg("🛑 Batch handmatig afgebroken door gebruiker!", "warn")
@@ -335,6 +490,7 @@ def background_batch_processor(paths, lang):
         if exists:
             log_msg(f"⏭️ Overslaan: {filename} ({reason})", "info")
             skipped_list.append(filename)
+            check_milestone()
             continue
             
         log_msg(f"🎬 Starten met: {filename}", "info")
@@ -355,11 +511,13 @@ def background_batch_processor(paths, lang):
             if is_rate_limited:
                 log_msg(f"❌ Zoeken mislukt vanwege aanhoudende rate-limiet: {filename}", "error")
                 failed_list.append(f"{filename} (Rate limit)")
+                check_milestone()
                 continue
 
         if not subs:
             log_msg(f"❌ Niet gevonden: {filename}", "error")
             failed_list.append(f"{filename} (Niet gevonden)")
+            check_milestone()
             continue
             
         downloaded = False
@@ -379,6 +537,7 @@ def background_batch_processor(paths, lang):
                 if dl_success:
                     log_msg(f"✅ Download succes! {msg}", "success")
                     success_list.append(filename)
+                    check_milestone()
                     downloaded = True
                     break
             
@@ -405,6 +564,7 @@ def background_batch_processor(paths, lang):
             if not downloaded and not rate_limited_dl:
                 log_msg(f"❌ Download mislukt: {filename}", "error")
                 failed_list.append(f"{filename} (Mislukt)")
+                check_milestone()
                 break
             
     if stop_batch_flag:
