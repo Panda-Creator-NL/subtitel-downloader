@@ -24,6 +24,10 @@ def log_msg(msg, msg_type='info'):
     batch_logs.append({"time": t, "msg": msg, "type": msg_type})
     if len(batch_logs) > 500: batch_logs.pop(0)
 
+def natural_sort_key(text):
+    """Sorteert tekst op natuurlijke volgorde zodat bijv. 'Season 2' vóór 'Season 10' komt."""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r'(\d+)', str(text))]
+
 def hashFile(name):
     try:
         longlongformat = '<q'
@@ -48,15 +52,32 @@ def hashFile(name):
     except: return None
 
 def clean_query(name):
-    if '.' in name and name.rsplit('.', 1)[-1].lower() in ['mkv', 'mp4', 'avi', 'srt']: name = name.rsplit('.', 1)[0]
+    if '.' in name and name.rsplit('.', 1)[-1].lower() in ['mkv', 'mp4', 'avi', 'srt']:
+        name = name.rsplit('.', 1)[0]
     words = ['extended edition', 'directors cut', "director's cut", 'unrated', 'special edition', 'theatrical cut', 'remastered', '1080p', '720p', '2160p', '4k', '8k', 'bluray', 'web-dl', 'webrip', 'hdtv', 'x264', 'x265', 'hevc', 'remux', 'aac', 'dts', 'ac3']
-    for w in words: name = re.sub(rf'(?i)\b{w}\b', ' ', name)
+    for w in words:
+        name = re.sub(rf'(?i)\b{w}\b', ' ', name)
     season, episode, year = "", "", ""
-    match_se = re.search(r'(?i)s(\d{1,2})e(\d{1,2})', name)
+
+    # 1. Standaard S01E01 of 1x01 formaat
+    match_se = re.search(r'(?i)\bs(\d{1,2})\s*[-._ ]?\s*e(\d{1,3})\b', name) or re.search(r'(?i)\b(\d{1,2})x(\d{1,3})\b', name)
     if match_se:
         season = int(match_se.group(1))
         episode = int(match_se.group(2))
         name = name[:match_se.start()]
+    else:
+        # 2. Losse seizoensaanduiding (bijv. 'Season 1', 'Seizoen 02', 'S01')
+        match_s = re.search(r'(?i)\b(?:season|seizoen)\s*(\d{1,2})\b', name) or re.search(r'(?i)^s(\d{1,2})\b', name.strip())
+        if match_s:
+            season = int(match_s.group(1))
+            name = name[:match_s.start()]
+
+        # 3. Losse afleveringsaanduiding (bijv. 'Episode 1', 'Aflevering 02', 'Ep 3', 'E04')
+        match_e = re.search(r'(?i)\b(?:episode|aflevering|ep|e)\s*(\d{1,3})\b', name)
+        if match_e:
+            episode = int(match_e.group(1))
+            name = name[:match_e.start()]
+
     paren_years = list(re.finditer(r'\((19\d{2}|20\d{2})\)', name))
     years = list(re.finditer(r'\b(19\d{2}|20\d{2})\b', name))
     if paren_years:
@@ -79,19 +100,54 @@ def get_best_search_terms(fullpath):
     grandparent = path_parts[-3] if len(path_parts) > 2 else ""
     f_title, f_year, f_season, f_ep = clean_query(filename)
     d_title, d_year, d_season, d_ep = clean_query(folder_name)
-    season = f_season or d_season
-    episode = f_ep or d_ep
+    season = f_season if f_season != "" else d_season
+    episode = f_ep if f_ep != "" else d_ep
+
+    # Als seizoen wel uit de map bekend is, maar aflevering nog niet: check of bestandsnaam begint met afleveringsnummer (bijv. '01 - Pilot.mkv')
+    if season != "" and episode == "":
+        lead_ep = re.match(r'^\s*(\d{1,3})(?:\s*[-._ ]|\b)', os.path.splitext(filename)[0])
+        if lead_ep and int(lead_ep.group(1)) < 200:
+            episode = int(lead_ep.group(1))
+
     year = d_year or f_year
     title = f_title
-    if d_year and not season: title = d_title
-    if season and episode:
-        if len(f_title.replace(' ', '')) < 3:
-            if 'season' in d_title.lower() or 'seizoen' in d_title.lower() or re.match(r'^s\d+$', d_title.lower()):
-                gp_title, _, _, _ = clean_query(grandparent)
+    if d_year and season == "": title = d_title
+    if season != "" and episode != "":
+        if len(f_title.replace(' ', '')) < 3 or f_title.isdigit():
+            if not d_title or 'season' in folder_name.lower() or 'seizoen' in folder_name.lower() or re.match(r'(?i)^s\d+$', folder_name.strip()):
+                gp_title, gp_year, _, _ = clean_query(grandparent)
                 title = gp_title
-            else: title = d_title
+                if not year and gp_year: year = gp_year
+            else:
+                title = d_title
     if not title: title = d_title or filename.rsplit('.', 1)[0]
     return title, year, season, episode
+
+def get_file_sort_key(rel_path):
+    """
+    Bepaalt de sorteervolgorde voor bestanden zodat series altijd netjes per
+    Serie -> Seizoen (1, 2, 3...) -> Aflevering (1, 2, 3...) worden afgewerkt.
+    """
+    norm_path = rel_path.replace('\\', '/')
+    parts = [p for p in norm_path.split('/') if p]
+    _, _, season, episode = get_best_search_terms(norm_path)
+
+    # Bepaal de hoofdmap van de serie of film (negeer de 'Season X' / 'Seizoen X' submap zodat alle seizoenen van 1 serie bij elkaar blijven)
+    dir_parts = parts[:-1]
+    if dir_parts and re.search(r'(?i)^(?:season|seizoen|s)\s*\d+\b', dir_parts[-1].strip()):
+        group_folder = '/'.join(dir_parts[:-1])
+    else:
+        group_folder = '/'.join(dir_parts)
+
+    s_num = int(season) if season != "" else 999999
+    e_num = int(episode) if episode != "" else 999999
+
+    return (
+        natural_sort_key(group_folder),
+        s_num,
+        e_num,
+        natural_sort_key(norm_path)
+    )
 
 def has_existing_subtitle(video_path, lang):
     base_path = os.path.splitext(video_path)[0]
@@ -372,24 +428,24 @@ def internal_search(fullpath, lang):
             search_term_display = f"Titel: '{title}' | Jaar: '{year}'"
             p3 = {"query": title, "languages": lang}
             if year: p3["year"] = year
-            if season: p3["season_number"] = season
-            if episode: p3["episode_number"] = episode
+            if season != "": p3["season_number"] = season
+            if episode != "": p3["episode_number"] = episode
             subs, is_limited = fetch_and_filter(p3, check_strict=True)
             if is_limited: return True, search_term_display, [], "API limiet bereikt"
             
         if not subs and year:
             search_term_display = f"Titel: '{title} {year}'"
             p3b = {"query": f"{title} {year}", "languages": lang}
-            if season: p3b["season_number"] = season
-            if episode: p3b["episode_number"] = episode
+            if season != "": p3b["season_number"] = season
+            if episode != "": p3b["episode_number"] = episode
             subs, is_limited = fetch_and_filter(p3b, check_strict=True)
             if is_limited: return True, search_term_display, [], "API limiet bereikt"
             
         if not subs and year:
             search_term_display = f"Titel: '{title}' (Zonder Jaar)"
             p4 = {"query": title, "languages": lang}
-            if season: p4["season_number"] = season
-            if episode: p4["episode_number"] = episode
+            if season != "": p4["season_number"] = season
+            if episode != "": p4["episode_number"] = episode
             subs, is_limited = fetch_and_filter(p4, check_strict=True)
             if is_limited: return True, search_term_display, [], "API limiet bereikt"
             
@@ -441,10 +497,10 @@ def background_batch_processor(paths, lang):
     is_batch_running = True
     stop_batch_flag = False
     batch_logs.clear()
-    log_msg("🚀 Achtergrond-Batch is gestart! Bestanden scannen...", "info")
+    log_msg("🚀 Achtergrond-Batch is gestart! Bestanden scannen en sorteren...", "info")
     
     found_files = []
-    for p in paths:
+    for p in sorted(paths, key=natural_sort_key):
         full_path = os.path.abspath(os.path.join(MEDIA_DIR, p))
         if not full_path.startswith(os.path.abspath(MEDIA_DIR)): continue
         if os.path.isfile(full_path) and full_path.lower().endswith(('.mkv', '.mp4', '.avi')):
@@ -455,15 +511,19 @@ def background_batch_processor(paths, lang):
             if os.path.basename(full_path).lower() == 'featurettes': continue 
             
             for root, dirs, files in os.walk(full_path):
-                dirs[:] = [d for d in dirs if d.lower() != 'featurettes']
+                # Sorteer submappen (bijv. Season 1, Season 2, ..., Season 10) op natuurlijke volgorde
+                dirs[:] = sorted([d for d in dirs if d.lower() != 'featurettes'], key=natural_sort_key)
                 
-                for file in files:
+                for file in sorted(files, key=natural_sort_key):
                     if file.lower().endswith(('.mkv', '.mp4', '.avi')):
                         if not file.startswith('.') and 'sample' not in file.lower():
                             fp = os.path.join(root, file)
                             found_files.append({"name": file, "path": os.path.relpath(fp, MEDIA_DIR)})
     
-    log_msg(f"✅ Gevonden: {len(found_files)} video's om te verwerken.", "success")
+    # Sorteer alle gevonden video's strikt op Serie -> Seizoen -> Aflevering
+    found_files.sort(key=lambda item: get_file_sort_key(item['path']))
+
+    log_msg(f"✅ Gevonden: {len(found_files)} video's (netjes gesorteerd op seizoen & aflevering).", "success")
     success_list = []
     failed_list = []
     skipped_list = []
@@ -485,15 +545,17 @@ def background_batch_processor(paths, lang):
         fullpath = item['path']
         filename = item['name']
         abs_path = os.path.abspath(os.path.join(MEDIA_DIR, fullpath))
+        _, _, s_num, e_num = get_best_search_terms(fullpath)
+        se_label = f"[S{int(s_num):02d}E{int(e_num):02d}] " if (s_num != "" and e_num != "") else (f"[S{int(s_num):02d}] " if s_num != "" else "")
         
         exists, reason = has_existing_subtitle(abs_path, lang)
         if exists:
-            log_msg(f"⏭️ Overslaan: {filename} ({reason})", "info")
+            log_msg(f"⏭️ Overslaan: {se_label}{filename} ({reason})", "info")
             skipped_list.append(filename)
             check_milestone()
             continue
             
-        log_msg(f"🎬 Starten met: {filename}", "info")
+        log_msg(f"🎬 Starten met: {se_label}{filename}", "info")
         
         is_rate_limited, search_term, subs, err = internal_search(fullpath, lang)
         
@@ -509,13 +571,13 @@ def background_batch_processor(paths, lang):
             
             is_rate_limited, search_term, subs, err = internal_search(fullpath, lang)
             if is_rate_limited:
-                log_msg(f"❌ Zoeken mislukt vanwege aanhoudende rate-limiet: {filename}", "error")
+                log_msg(f"❌ Zoeken mislukt vanwege aanhoudende rate-limiet: {se_label}{filename}", "error")
                 failed_list.append(f"{filename} (Rate limit)")
                 check_milestone()
                 continue
 
         if not subs:
-            log_msg(f"❌ Niet gevonden: {filename}", "error")
+            log_msg(f"❌ Niet gevonden: {se_label}{filename}", "error")
             failed_list.append(f"{filename} (Niet gevonden)")
             check_milestone()
             continue
@@ -535,7 +597,7 @@ def background_batch_processor(paths, lang):
                     break
                     
                 if dl_success:
-                    log_msg(f"✅ Download succes! {msg}", "success")
+                    log_msg(f"✅ Download succes ({se_label.strip() or filename})! {msg}", "success")
                     success_list.append(filename)
                     check_milestone()
                     downloaded = True
@@ -562,7 +624,7 @@ def background_batch_processor(paths, lang):
                 continue 
                 
             if not downloaded and not rate_limited_dl:
-                log_msg(f"❌ Download mislukt: {filename}", "error")
+                log_msg(f"❌ Download mislukt: {se_label}{filename}", "error")
                 failed_list.append(f"{filename} (Mislukt)")
                 check_milestone()
                 break
@@ -591,17 +653,21 @@ def browse():
     sub_path = request.args.get('path', '')
     target_path = os.path.abspath(os.path.join(MEDIA_DIR, sub_path))
     if not target_path.startswith(os.path.abspath(MEDIA_DIR)): return jsonify({"error": "Toegang geweigerd"}), 403
-    items = []
+    dirs_list = []
+    files_list = []
     if os.path.exists(target_path):
-        for entry in sorted(os.listdir(target_path)):
+        for entry in sorted(os.listdir(target_path), key=natural_sort_key):
             if entry.lower() == 'featurettes': continue
                 
             f = os.path.join(target_path, entry)
-            if os.path.isdir(f): items.append({"name": entry, "is_dir": True, "path": os.path.relpath(f, MEDIA_DIR)})
+            rel_f = os.path.relpath(f, MEDIA_DIR)
+            if os.path.isdir(f):
+                dirs_list.append({"name": entry, "is_dir": True, "path": rel_f})
             elif entry.lower().endswith(('.mkv', '.mp4', '.avi')):
                 if not entry.startswith('.') and 'sample' not in entry.lower():
-                    items.append({"name": entry, "is_dir": False, "path": os.path.relpath(f, MEDIA_DIR)})
-    return jsonify({"current_path": sub_path, "items": items})
+                    files_list.append({"name": entry, "is_dir": False, "path": rel_f})
+        files_list.sort(key=lambda item: get_file_sort_key(item['path']))
+    return jsonify({"current_path": sub_path, "items": dirs_list + files_list})
 
 @app.route('/api/search', methods=['POST'])
 def search():
