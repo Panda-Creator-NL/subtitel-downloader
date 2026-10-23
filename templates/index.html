@@ -36,7 +36,7 @@
         <div class="header">
             <h2 id="app-title">🍿 Subtitel downloader 🎬</h2>
             <div style="display: flex; gap: 10px; align-items: center;">
-                <a href="https://pandaboynl-support-page.duckdns.org" target="_blank" class="contact-btn">💬 Contact Beheerder</a>
+                <a href="https://panda-creator-support-page.duckdns.org" target="_blank" class="contact-btn">💬 Contact Beheerder</a>
                 <a href="https://www.paypal.com/paypalme/PandaBoyNL" target="_blank" class="coffee-btn">👉 Buy me a coffee</a>
             </div>
         </div>
@@ -61,13 +61,10 @@
 
         <div id="results" style="margin-top: 20px;"></div>
         
-        <!-- Container om het logboek en de mappenstructuur naast elkaar te zetten -->
         <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-top: 20px; align-items: flex-start;">
 
-            <!-- Live logboek (neemt 50% van de ruimte in als het zichtbaar is) -->
             <div id="batch-logs" class="log-box" style="display:none; flex: 1; min-width: 300px; margin-top: 0;"></div>
 
-            <!-- Huidige map & Browser (neemt de andere 50% van de ruimte in) -->
             <div style="flex: 1; min-width: 300px; background: #2f3136; padding: 15px; border-radius: 8px; border: 1px solid #444; display: flex; flex-direction: column;">
                 <h3 id="lbl-current-dir" style="margin-top: 0; margin-bottom: 10px;">📂 Huidige map: </h3>
                 <div id="browser" style="border-top: 2px solid #444; padding-top: 10px; max-height: 300px; overflow-y: auto;"></div>
@@ -172,8 +169,15 @@
                     });
                     
                     if (logBox.innerHTML !== html) {
+                        // Controleer of de scrolbalk (bijna) helemaal onderaan staat voordat we de html updaten
+                        const isAtBottom = logBox.scrollHeight - logBox.scrollTop <= logBox.clientHeight + 50;
+
                         logBox.innerHTML = html;
-                        logBox.scrollTop = logBox.scrollHeight;
+
+                        // Scroll alleen terug naar beneden als we vóór de update ook al onderaan stonden
+                        if (isAtBottom) {
+                            logBox.scrollTop = logBox.scrollHeight;
+                        }
                     }
                 }
                 
