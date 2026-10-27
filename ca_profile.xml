@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <CommunityApplications>
   <Profile>
-    Welkom in de repository van PandaBoyNL! Hier vind je handige, snelle applicaties voor je Unraid server, waaronder Torrent Maker Pro en de gloednieuwe Ultimate Video Converter. Voor hulp, het melden van bugs of het aanvragen van nieuwe functies kun je gebruik maken van de contact knop in de apps of direct via Discord.
+    Welkom in de repository van Panda-Creator-NL! Hier vind je handige, snelle applicaties voor je Unraid server, waaronder Torrent Maker Pro en de gloednieuwe Ultimate Video Converter. Voor hulp, het melden van bugs of het aanvragen van nieuwe functies kun je gebruik maken van de contact knop in de apps of direct via Discord.
   </Profile>
-  <Icon>https://raw.githubusercontent.com/PandaBoyNL/subtitel-downloader/main/icon.jpg</Icon>
-  <WebPage>https://github.com/PandaBoyNL</WebPage>
+  <Icon>https://raw.githubusercontent.com/Panda-Creator-NL/subtitel-downloader/main/icon.jpg</Icon>
+  <WebPage>https://github.com/Panda-Creator-NL</WebPage>
   
-  <Support>https://pandaboynl-s-windows-exe-en-unraid-docker-support.geminilaunch.com</Support>
+  <Support>https://panda-creator-support-page.duckdns.org/</Support>
   
-  <DonateLink>https://paypal.me/PandaBoyNL</DonateLink>
+  <DonateLink>https://paypal.me/PandaCreatorNL</DonateLink>
   <DonateText>☕ Buy me a coffee (Support de developer!)</DonateText>
 </CommunityApplications>
